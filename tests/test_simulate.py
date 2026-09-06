@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 from src.data import load_daily_peaks
-from src.fit import fit_winter_weekday_peaks, fit_annual_trend, fit_weekend_effect
+from src.fit import fit_winter_weekday_peaks, fit_weekend_effect
 from src.simulate import (simulate, summarise, exceedance, convergence,
                           variance_contribution, _residuals)
 

@@ -4,7 +4,6 @@ Each function returns both the fitted parameters and the sample they were
 fitted on, so a reader can check the fit rather than trust it.
 """
 from __future__ import annotations
-import numpy as np
 import pandas as pd
 from scipy import stats
 
