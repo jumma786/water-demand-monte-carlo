@@ -1,80 +1,96 @@
 import numpy as np
 import pytest
-from src.simulate import simulate, summarise, convergence, variance_contribution, Assumption
-from src.assumptions import ASSUMPTIONS, HOUSEHOLDS
+from src.data import load_daily_peaks
+from src.fit import fit_winter_weekday_peaks, fit_annual_trend, fit_weekend_effect
+from src.simulate import (simulate, summarise, exceedance, convergence,
+                          variance_contribution, _residuals)
 
-SMALL = 20_000
-
-
-def test_reproducible_with_seed():
-    a = simulate(ASSUMPTIONS, HOUSEHOLDS, n_sims=SMALL, seed=7)
-    b = simulate(ASSUMPTIONS, HOUSEHOLDS, n_sims=SMALL, seed=7)
-    assert a.equals(b), "same seed must reproduce identical draws"
+N = 20_000
 
 
-def test_different_seeds_differ():
-    a = simulate(ASSUMPTIONS, HOUSEHOLDS, n_sims=SMALL, seed=1)
-    b = simulate(ASSUMPTIONS, HOUSEHOLDS, n_sims=SMALL, seed=2)
-    assert not np.isclose(a["distribution_input_ml_d"].mean(),
-                          b["distribution_input_ml_d"].mean(), atol=1e-9)
+@pytest.fixture(scope="module")
+def daily():
+    return load_daily_peaks()
 
 
-def test_percentiles_ordered():
-    s = summarise(simulate(ASSUMPTIONS, HOUSEHOLDS, n_sims=SMALL, seed=42))
-    assert s["p10"] < s["p50"] < s["p90"]
+def test_real_data_loads_six_years(daily):
+    assert daily.index.min().year == 2019 and daily.index.max().year == 2024
+    assert 2150 < len(daily) < 2200, "expect ~2192 complete days"
 
 
-def test_distribution_input_exceeds_household_demand():
-    """Leakage is additive on the distribution side, so DI must exceed demand."""
-    sims = simulate(ASSUMPTIONS, HOUSEHOLDS, n_sims=SMALL, seed=42)
-    assert (sims["distribution_input_ml_d"] > sims["household_demand_ml_d"]).all()
+def test_partial_days_excluded(daily):
+    """Every retained day must be a full day of settlement periods."""
+    assert daily["peak_mw"].min() > 10_000, "a partial day would show as a dip"
 
 
-def test_invalid_draws_are_rejected_not_clipped():
-    sims = simulate(ASSUMPTIONS, HOUSEHOLDS, n_sims=SMALL, seed=42)
-    assert (sims["leakage_fraction"] >= 0).all()
-    assert (sims["leakage_fraction"] < 0.6).all()
-    assert (sims["pcc_l_per_head_per_day"] > 0).all()
+def test_peaks_are_physically_plausible(daily):
+    assert daily["peak_mw"].between(15_000, 60_000).all()
 
 
-def test_zero_leakage_makes_di_equal_demand():
-    a = dict(ASSUMPTIONS)
-    a["leakage_fraction"] = Assumption("no leak", "uniform", (0.0, 0.0), "fraction")
-    sims = simulate(a, HOUSEHOLDS, n_sims=1_000, seed=3)
-    assert np.allclose(sims["distribution_input_ml_d"], sims["household_demand_ml_d"])
+def test_winter_peaks_exceed_summer(daily):
+    w = daily[daily["is_winter"]]["peak_mw"].mean()
+    s = daily[daily["month"].isin([6, 7, 8])]["peak_mw"].mean()
+    assert w > s, "GB winter peaks must exceed summer"
 
 
-def test_convergence_estimate_stabilises():
-    """The p50 shift between successive sample sizes must shrink."""
-    conv = convergence(ASSUMPTIONS, HOUSEHOLDS, sizes=(1_000, 10_000, 100_000))
-    shifts = conv["p50_shift_vs_previous"].dropna().tolist()
-    assert shifts[-1] < shifts[0], "estimate should settle as n grows"
+def test_weekday_effect_is_real_and_signed(daily):
+    e = fit_weekend_effect(daily)
+    assert e["gap_mw"] > 0, "weekday peaks should exceed weekend"
+    assert e["t_pvalue"] < 0.01
 
 
-def test_variance_shares_sum_to_one():
-    sims = simulate(ASSUMPTIONS, HOUSEHOLDS, n_sims=SMALL, seed=42)
-    var = variance_contribution(sims)
-    assert np.isclose(var["share_of_explained_variance"].sum(), 1.0)
+def test_residuals_are_centred(daily):
+    r = _residuals(daily)
+    assert abs(r.mean()) < 1e-6, "within-year residuals must centre on zero"
 
 
-def test_occupancy_dominates_meter_factor():
-    """Ordering is the actionable output; assert it explicitly."""
-    sims = simulate(ASSUMPTIONS, HOUSEHOLDS, n_sims=SMALL, seed=42)
-    var = variance_contribution(sims).set_index("input")
-    assert (var.loc["occupancy", "share_of_explained_variance"]
-            > var.loc["meter_factor", "share_of_explained_variance"])
+def test_data_rejects_normality(daily):
+    """The finding the whole README rests on; assert it so it cannot rot."""
+    f = fit_winter_weekday_peaks(daily)
+    assert f["ks_pvalue_vs_normal"] < 0.05, "normality no longer rejected"
+    assert f["detrended_skew"] < -0.3, "left skew has changed"
 
 
-def test_widening_an_input_widens_the_output():
-    narrow = simulate(ASSUMPTIONS, HOUSEHOLDS, n_sims=SMALL, seed=5)
-    wide_a = dict(ASSUMPTIONS)
-    wide_a["pcc"] = Assumption("pcc wide", "normal", (138.0, 30.0), "l/h/d")
-    wide = simulate(wide_a, HOUSEHOLDS, n_sims=SMALL, seed=5)
-    assert (summarise(wide)["p90_minus_p10"]
-            > summarise(narrow)["p90_minus_p10"])
+def test_reproducible_with_seed(daily):
+    a = simulate(daily, n_sims=N, seed=7)
+    b = simulate(daily, n_sims=N, seed=7)
+    assert np.array_equal(a, b)
 
 
-def test_unsupported_distribution_raises():
-    bad = Assumption("bad", "cauchy", (0, 1), "x")
+def test_percentiles_ordered(daily):
+    s = summarise(simulate(daily, n_sims=N, seed=42))
+    assert s["p10"] < s["p50"] < s["p90"] < s["p99"]
+
+
+def test_normal_overstates_the_upper_tail(daily):
+    """The headline result, asserted."""
+    emp = simulate(daily, n_sims=200_000, seed=42, variation="empirical")
+    nor = simulate(daily, n_sims=200_000, seed=42, variation="normal")
+    assert exceedance(nor, 45_000) > 2 * exceedance(emp, 45_000)
+
+
+def test_exceedance_is_monotonic(daily):
+    sim = simulate(daily, n_sims=N, seed=42)
+    assert exceedance(sim, 40_000) > exceedance(sim, 44_000) > exceedance(sim, 48_000)
+
+
+def test_variance_shares_sum_to_about_one(daily):
+    v = variance_contribution(daily, n_sims=N)
+    assert 0.97 < v["share"].sum() < 1.03
+
+
+def test_day_to_day_dominates_annual_shift(daily):
+    v = variance_contribution(daily, n_sims=N).set_index("component")
+    assert (v.loc["day-to-day variation", "share"]
+            > v.loc["year-on-year shift", "share"])
+
+
+def test_convergence_tightens(daily):
+    c = convergence(daily, sizes=(1_000, 25_000, 500_000))
+    shifts = c["p99_shift_vs_previous"].dropna().tolist()
+    assert shifts[-1] < shifts[0]
+
+
+def test_unknown_variation_raises(daily):
     with pytest.raises(ValueError):
-        bad.draw(10, np.random.default_rng(0))
+        simulate(daily, n_sims=100, variation="student-t")

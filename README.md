@@ -1,120 +1,138 @@
-# Water Demand Monte Carlo
+# Peak Demand Monte Carlo — On Real Data
 
-A Monte Carlo simulation of household water demand and distribution input, built
-to answer a question a point estimate cannot: **how wrong could this number be,
-and which assumption is making it wrong?**
+A Monte Carlo forecast of next winter's peak electricity demand, where **every
+input distribution is estimated from measured data rather than assumed**.
+
+The headline result is about method, not megawatts: reaching for a normal
+distribution out of habit **overstates the tail risk by a factor of four**.
 
 ```bash
-pip install -r requirements.txt
+python -m src.download      # fetch the NESO CSVs (not committed)
 python run_analysis.py
 python -m pytest tests/ -q
 ```
 
 ---
 
+## The data
+
+**NESO (National Energy System Operator) Historic Demand Data**, half-hourly
+settlement periods for 2019–2024, under the NESO Open Data Licence.
+<https://www.neso.energy/data-portal/historic-demand-data>
+
+105,222 half-hourly readings, aggregated to **2,192 complete days**. Days with
+fewer than 46 or more than 50 settlement periods are dropped rather than
+averaged, because a partially captured day looks like a demand dip that never
+happened. Clock-change days legitimately have 46 or 50 and are kept.
+
+The population of interest is **winter weekday peaks** (Nov–Feb, Mon–Fri), which
+is when the system is stressed and therefore what a capacity question is about.
+That gives 516 observations.
+
+## What the data says before any simulation runs
+
+| Year | Mean winter weekday peak (MW) | SD | n |
+|---|---|---|---|
+| 2019 | 43,278 | 2,555 | 86 |
+| 2020 | 42,043 | 1,891 | 87 |
+| 2021 | 42,172 | 2,585 | 86 |
+| 2022 | 40,286 | 3,407 | 85 |
+| 2023 | 39,212 | 2,847 | 85 |
+| 2024 | 39,420 | 2,813 | 87 |
+
+Year-on-year change averages **−772 MW** with a standard deviation of **911 MW**
+across five transitions, so the decline is real but noisy: two of the five years
+went up.
+
+Weekday peaks exceed weekend peaks by **3,172 MW** (Welch t-test, p = 1.15e-29).
+
+**And the distribution is not normal.** De-trended winter weekday peaks have a
+skew of **−0.687**, and a Kolmogorov–Smirnov test rejects normality at
+**p = 0.0145**.
+
 ## The finding
 
-Running 250,000 iterations over four uncertain inputs:
+Two variants of the same simulation, 200,000 iterations each. Both use the same
+measured year-on-year term. They differ only in how day-to-day variation is
+drawn: from a fitted normal, or by **bootstrapping the actual residuals**.
 
-| Measure | Distribution input (Ml/d) |
-|---|---|
-| P10 | **792.6** |
-| P50 | **947.2** |
-| P90 | **1,133.4** |
-| Mean | 956.2 |
-| Standard deviation | 131.8 |
-| P90 − P10 spread | **340.8** |
+| | Empirical bootstrap | Fitted normal |
+|---|---|---|
+| P50 | 38,843 MW | 38,656 MW |
+| P90 | 42,135 MW | 42,304 MW |
+| **P99** | **44,275 MW** | **45,265 MW** |
 
-**The deterministic point estimate is 911.6 Ml/d, which sits at the 39th
-percentile of the simulated distribution.**
-
-That is the reason this repository exists. Taking the central value of every
-input and multiplying through does not produce the central outcome. It produces
-a figure the real answer exceeds roughly 61% of the time, because the inputs
-combine multiplicatively and two of them are skewed. A planner using the point
-estimate is not being conservative; they are being optimistic without knowing it.
-
-## Which assumption actually matters
-
-Attribution by squared Spearman rank correlation, normalised:
-
-| Input | Share of explained variance |
-|---|---|
-| Household occupancy | **55.6%** |
-| Per capita consumption | **39.1%** |
-| Leakage fraction | 4.7% |
-| Meter registration factor | 0.5% |
-
-Rank-based rather than linear, so a non-linear response does not break the
-attribution.
-
-**The practical consequence:** effort spent narrowing the meter registration
-factor changes almost nothing. Half a percent of the spread is not worth a
-metering study. Occupancy and per capita consumption carry 95% of the
-uncertainty between them, and that is where measurement investment belongs.
-
-## Convergence, because a Monte Carlo result without it has unknown precision
-
-| Iterations | P50 | P90 | P50 shift vs previous |
+| Exceedance | Empirical | Normal | Overstatement |
 |---|---|---|---|
-| 1,000 | 943.07 | 1,126.13 | — |
-| 5,000 | 946.09 | 1,130.53 | 3.02 |
-| 10,000 | 949.84 | 1,131.04 | 3.75 |
-| 50,000 | 947.25 | 1,130.67 | 2.59 |
-| 100,000 | 948.19 | 1,131.51 | 0.94 |
-| 250,000 | 947.18 | 1,133.44 | 1.01 |
+| P(peak > 44,000 MW) | 1.47% | 3.00% | **2.0×** |
+| P(peak > 45,000 MW) | 0.30% | 1.30% | **4.3×** |
+| P(peak > 46,000 MW) | 0.04% | 0.48% | **12×** |
 
-The median settles to within about 1 Ml/d by 100,000 iterations. Below 10,000 the
-estimate still moves by 3–4 Ml/d between runs, which is the kind of instability
-that gets mistaken for a real change when a model is re-run next quarter.
+Because the real distribution is left-skewed, a normal puts far too much mass in
+the upper tail. An analyst who fits a normal without testing it will plan for a
+peak roughly four times less likely than their model claims, and the error grows
+the further into the tail you look — which is precisely the region a capacity
+margin decision lives in.
 
-## How it works
+The KS test that catches this takes one line. It is asserted in the test suite so
+the finding cannot quietly rot if the data is refreshed.
 
-```
-occupancy x per capita consumption x meter factor x households
-        |
-        v
-household demand (Ml/d)
-        |
-        v  divided by (1 - leakage fraction)
-distribution input (Ml/d)
-```
+## Where the uncertainty comes from
 
-Each input is drawn from a declared distribution (triangular, normal or uniform)
-in `src/assumptions.py`. Physically impossible draws are **rejected, not silently
-clipped**, because clipping quietly distorts the tail you are trying to measure.
+| Component | Share of variance |
+|---|---|
+| Day-to-day variation | **89.6%** |
+| Year-on-year shift | 10.2% |
+
+Nine tenths of the spread is weather and behaviour on the day, not the trend.
+Refining the trend estimate is therefore close to worthless for this question;
+the payoff is in modelling daily variation better.
+
+## Convergence
+
+| Iterations | P50 | P99 | P99 shift vs previous |
+|---|---|---|---|
+| 1,000 | 38,827 | 44,006 | — |
+| 5,000 | 38,780 | 44,140 | 134 |
+| 25,000 | 38,839 | 44,274 | 134 |
+| 100,000 | 38,821 | 44,207 | 68 |
+| 200,000 | 38,843 | 44,275 | 68 |
+| 500,000 | 38,823 | 44,241 | 34 |
+
+Tail percentiles converge far more slowly than the median. At 1,000 iterations
+the P99 still moves by over 130 MW between runs, which is enough to change a
+margin decision. A Monte Carlo result quoted without a convergence check is a
+number of unknown precision.
 
 ## Testing
 
-11 tests covering seed reproducibility, percentile ordering, the leakage
-identity, rejection of invalid draws, convergence behaviour, variance shares
-summing to one, and the assertion that widening an input widens the output.
+15 tests, all passing. They cover data span and completeness, physical
+plausibility, the winter-exceeds-summer and weekday-exceeds-weekend sanity
+checks, residual centring, **the non-normality finding**, seed reproducibility,
+percentile ordering, **the normal-overstates-the-tail result**, exceedance
+monotonicity, variance shares, and convergence tightening.
 
-```
-11 passed
-```
+## Honesty
 
-## Data and honesty
+The data is real and openly licensed. The simulation structure is a
+deliberate simplification: peak = last winter's level + a year-on-year shift +
+day-to-day variation. It carries no weather covariate, no explicit COVID
+adjustment for 2020, and no embedded-generation treatment, all of which a
+production forecast would need.
 
-**No company data is used anywhere in this repository.** Every input is an
-illustrative range declared in `src/assumptions.py`, chosen to be plausible for a
-large UK water company and to exercise the model. The household count is a scale
-reference only.
-
-This means the headline numbers are **not** a forecast for any real region. What
-is transferable is the method: the structure of the propagation, the convergence
-check, the rejection-not-clipping rule, and the variance attribution that tells
-you which assumption to go and measure properly.
-
-Swap the contents of `src/assumptions.py` for real distributions and the analysis
-runs unchanged.
+So the megawatt figures are a demonstration, not an operational forecast. What
+transfers is the method: fitting inputs from data instead of assuming them,
+testing the distributional assumption before relying on it, separating where the
+uncertainty actually comes from, and checking convergence at the percentile you
+intend to quote.
 
 ## Layout
 
 ```
-src/simulate.py       simulation, summary, convergence, variance attribution
-src/assumptions.py    every uncertain input, declared in one place
-run_analysis.py       runs it and writes output/
-tests/                11 tests
-output/               summary.json, convergence.csv, variance_contribution.csv
+src/data.py        load NESO half-hourly, aggregate to daily peaks
+src/fit.py         estimate every input from the data, with fit diagnostics
+src/simulate.py    simulation, summary, exceedance, convergence, variance split
+src/download.py    fetch the source CSVs
+run_analysis.py    runs everything, writes output/
+tests/             15 tests
 ```
