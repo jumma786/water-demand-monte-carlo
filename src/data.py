@@ -7,7 +7,9 @@ Licence: NESO Open Data Licence.
 Files are not committed; run `python -m src.download` to fetch them.
 """
 from __future__ import annotations
+
 from pathlib import Path
+
 import pandas as pd
 
 RAW = Path(__file__).resolve().parent.parent / "data" / "raw"

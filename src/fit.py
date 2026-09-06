@@ -4,6 +4,7 @@ Each function returns both the fitted parameters and the sample they were
 fitted on, so a reader can check the fit rather than trust it.
 """
 from __future__ import annotations
+
 import pandas as pd
 from scipy import stats
 
@@ -23,7 +24,7 @@ def fit_winter_weekday_peaks(daily: pd.DataFrame) -> dict:
     return {
         "pooled_mean_mw": mu,
         "within_year_sd_mw": sigma,
-        "n_observations": int(len(w)),
+        "n_observations": len(w),
         "by_year": by_year,
         "detrended_skew": float(stats.skew(detrended)),
         "ks_pvalue_vs_normal": float(ks.pvalue),
@@ -40,7 +41,7 @@ def fit_annual_trend(daily: pd.DataFrame) -> dict:
         "yoy_changes_mw": yoy,
         "yoy_mean_mw": float(yoy.mean()),
         "yoy_sd_mw": float(yoy.std(ddof=1)),
-        "n_transitions": int(len(yoy)),
+        "n_transitions": len(yoy),
     }
 
 

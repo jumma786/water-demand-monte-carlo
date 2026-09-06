@@ -12,9 +12,11 @@ The data rejects normality (see fit.py), so the gap between the two is the
 error a modeller inherits by reaching for a normal out of habit.
 """
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
-from .fit import fit_winter_weekday_peaks, fit_annual_trend
+
+from .fit import fit_annual_trend, fit_winter_weekday_peaks
 
 
 def _residuals(daily: pd.DataFrame) -> np.ndarray:
@@ -49,7 +51,7 @@ def simulate(daily: pd.DataFrame, n_sims: int = 200_000, seed: int = 42,
 def summarise(sim: np.ndarray) -> dict:
     s = pd.Series(sim)
     return {
-        "n_iterations": int(len(s)),
+        "n_iterations": len(s),
         "mean": float(s.mean()),
         "p10": float(s.quantile(0.10)),
         "p50": float(s.quantile(0.50)),
